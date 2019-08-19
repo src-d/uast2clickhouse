@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/mailru/dbr"
@@ -97,33 +98,38 @@ type walkTrace struct {
 	Node      nodes.External
 	Path      []int32
 	ParentKey string
+	DiscardedTypes []string
 }
 
 /*
 
-CREATE TABLE uasts (
+clickhouse-client --query="CREATE TABLE uasts (
   id Int32,
   repo String,
+  lang String,
   file String,
   line Int32,
   parents Array(Int32),
   pkey String,
   roles Array(Int16),
   type String,
+  uptypes Array(String),
   value String
-) ENGINE = MergeTree() ORDER BY (repo, file, id);
+) ENGINE = MergeTree() ORDER BY (repo, file, id);"
 
 */
 
 type record struct {
 	ID         int32         `db:"id"`
 	Repository string        `db:"repo"`
+	Language   string        `db:"lang"`
 	File       string        `db:"file"`
 	Line       int32         `db:"line"`
 	Parents    string        `db:"parents"`  // []int32
 	ParentKey  string        `db:"pkey"`
 	Roles      string        `db:"roles"`  // []int16
 	Type       string        `db:"type"`
+	UpstreamTypes string     `db:"uptypes"`  // []string
 	Value      string        `db:"value"`
 }
 
@@ -133,7 +139,8 @@ func formatArray(v interface{}) string {
 }
 
 func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
-	queue := []walkTrace{{tree, nil, ""}}
+	lang := strings.Split(uast.TypeOf(tree), ":")[0]
+	queue := []walkTrace{{tree, nil, "", nil}}
 	var i int32 = 1
 	for len(queue) > 0 {
 		trace := queue[len(queue)-1]
@@ -141,20 +148,29 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 		node := trace.Node
 		path := trace.Path
 
-		goDeeper := func() {
+		goDeeper := func(discarded bool) {
+			var discardedTypes []string
+			if discarded {
+				nodeType := uast.TypeOf(node)
+				if nodeType != "" {
+					discardedTypes = make([]string, len(trace.DiscardedTypes)+1)
+					copy(discardedTypes, trace.DiscardedTypes)
+					discardedTypes[len(trace.DiscardedTypes)] = nodeType
+				}
+			}
 			switch nodes.KindOf(node) {
 			case nodes.KindObject:
 				if n, ok := node.(nodes.ExternalObject); ok {
 					for _, k := range n.Keys() {
 						v, _ := n.ValueAt(k)
-						queue = append(queue, walkTrace{v, path, k})
+						queue = append(queue, walkTrace{v, path, k, discardedTypes})
 					}
 				}
 			case nodes.KindArray:
 				if n, ok := node.(nodes.ExternalArray); ok {
 					for j := 0; j < n.Size(); j++ {
 						v := n.ValueAt(j)
-						queue = append(queue, walkTrace{v, path, strconv.Itoa(j)})
+						queue = append(queue, walkTrace{v, path, strconv.Itoa(j), discardedTypes})
 					}
 				}
 			}
@@ -172,11 +188,11 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 				roles[i] = int16(r)
 			}
 		} else {
-			goDeeper()
+			goDeeper(true)
 			continue
 		}
 		if ps.Start() == nil || ps.Start().Line == 0 {
-			goDeeper()
+			goDeeper(true)
 			continue
 		}
 		if value == "" {
@@ -193,29 +209,45 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 					value = fmt.Sprint(sub.Value())
 				} else if sub := properNode["value"]; sub != nil {
 					value = fmt.Sprint(sub.Value())
+				} else if sub := properNode["Names"]; sub != nil {
+					// https://github.com/bblfsh/go-driver/issues/55
+					if n, ok := sub.(nodes.ExternalArray); ok {
+						var parts []string
+						for j := 0; j < n.Size(); j++ {
+							v := n.ValueAt(j)
+							if iv, ok := v.(nodes.Object); ok {
+								if nn := iv["Name"]; nn != nil {
+									parts = append(parts, fmt.Sprint(nn.Value()))
+								}
+							}
+						}
+						value = strings.Join(parts, "/")
+					}
 				}
 			}
 		}
 		if value == "" || value == "<nil>" {
 			// empty value => we don't care
-			goDeeper()
+			goDeeper(true)
 			continue
 		}
 
 		path = make([]int32, len(trace.Path)+1)
 		copy(path, trace.Path)
 		path[len(trace.Path)] = i
-		goDeeper()
+		goDeeper(false)
 
 		emitter <- record{
 			ID:         i,
 			Repository: repo,
+			Language:   lang,
 			File:       file,
 			Line:       int32(ps.Start().Line),
 			Parents:    formatArray(trace.Path),
 			ParentKey:  trace.ParentKey,
 			Roles:      formatArray(roles),
 			Type:       uast.TypeOf(node),
+			UpstreamTypes: formatArray(trace.DiscardedTypes),
 			Value:      value,
 		}
 		i++
@@ -270,7 +302,7 @@ func main() {
 
 			newBuilder := func() *dbr.InsertBuilder{
 				return session.InsertInto(table).
-					Columns("id", "repo", "file", "line", "parents", "pkey", "roles", "type", "value")
+					Columns("id", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "uptypes", "value")
 			}
 			builder := newBuilder()
 
