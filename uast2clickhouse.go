@@ -95,10 +95,11 @@ func readParquet(parquetPath string, streams int, payload func(head, path string
 }
 
 type walkTrace struct {
-	Node      nodes.External
-	Path      []int32
-	ParentKey string
-	DiscardedTypes []string
+	Node            nodes.External
+	Path            []int32
+	ParentKey       string
+	DiscardedTypes  []string
+	ParentPositions uast.Positions
 }
 
 /*
@@ -120,17 +121,17 @@ clickhouse-client --query="CREATE TABLE uasts (
 */
 
 type record struct {
-	ID         int32         `db:"id"`
-	Repository string        `db:"repo"`
-	Language   string        `db:"lang"`
-	File       string        `db:"file"`
-	Line       int32         `db:"line"`
-	Parents    string        `db:"parents"`  // []int32
-	ParentKey  string        `db:"pkey"`
-	Roles      string        `db:"roles"`  // []int16
-	Type       string        `db:"type"`
-	UpstreamTypes string     `db:"uptypes"`  // []string
-	Value      string        `db:"value"`
+	ID            int32  `db:"id"`
+	Repository    string `db:"repo"`
+	Language      string `db:"lang"`
+	File          string `db:"file"`
+	Line          int32  `db:"line"`
+	Parents       string `db:"parents"` // []int32
+	ParentKey     string `db:"pkey"`
+	Roles         string `db:"roles"` // []int16
+	Type          string `db:"type"`
+	UpstreamTypes string `db:"uptypes"` // []string
+	Value         string `db:"value"`
 }
 
 func formatArray(v interface{}) string {
@@ -140,15 +141,17 @@ func formatArray(v interface{}) string {
 
 func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 	lang := strings.Split(uast.TypeOf(tree), ":")[0]
-	queue := []walkTrace{{tree, nil, "", nil}}
+	queue := []walkTrace{{tree, nil, "", nil, nil}}
 	var i int32 = 1
 	for len(queue) > 0 {
 		trace := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
 		node := trace.Node
 		path := trace.Path
+		parentPs := trace.ParentPositions
+		nodeType := uast.TypeOf(node)
 
-		goDeeper := func(discarded bool) {
+		goDeeper := func(discarded bool, ps uast.Positions) {
 			var discardedTypes []string
 			if discarded {
 				nodeType := uast.TypeOf(node)
@@ -162,15 +165,17 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 			case nodes.KindObject:
 				if n, ok := node.(nodes.ExternalObject); ok {
 					for _, k := range n.Keys() {
-						v, _ := n.ValueAt(k)
-						queue = append(queue, walkTrace{v, path, k, discardedTypes})
+						if k != "Names" {
+							v, _ := n.ValueAt(k)
+							queue = append(queue, walkTrace{v, path, k, discardedTypes, ps})
+						}
 					}
 				}
 			case nodes.KindArray:
 				if n, ok := node.(nodes.ExternalArray); ok {
 					for j := 0; j < n.Size(); j++ {
 						v := n.ValueAt(j)
-						queue = append(queue, walkTrace{v, path, strconv.Itoa(j), discardedTypes})
+						queue = append(queue, walkTrace{v, path, strconv.Itoa(j), discardedTypes, ps})
 					}
 				}
 			}
@@ -188,11 +193,19 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 				roles[i] = int16(r)
 			}
 		} else {
-			goDeeper(true)
+			goDeeper(true, parentPs)
 			continue
 		}
 		if ps.Start() == nil || ps.Start().Line == 0 {
-			goDeeper(true)
+			if parentPs != nil {
+				ps = parentPs
+			} else {
+				goDeeper(true, parentPs)
+				continue
+			}
+		}
+		if nodeType == "" {
+			goDeeper(true, ps)
 			continue
 		}
 		if value == "" {
@@ -228,27 +241,27 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 		}
 		if value == "" || value == "<nil>" {
 			// empty value => we don't care
-			goDeeper(true)
+			goDeeper(true, ps)
 			continue
 		}
 
 		path = make([]int32, len(trace.Path)+1)
 		copy(path, trace.Path)
 		path[len(trace.Path)] = i
-		goDeeper(false)
+		goDeeper(false, ps)
 
 		emitter <- record{
-			ID:         i,
-			Repository: repo,
-			Language:   lang,
-			File:       file,
-			Line:       int32(ps.Start().Line),
-			Parents:    formatArray(trace.Path),
-			ParentKey:  trace.ParentKey,
-			Roles:      formatArray(roles),
-			Type:       uast.TypeOf(node),
+			ID:            i,
+			Repository:    repo,
+			Language:      lang,
+			File:          file,
+			Line:          int32(ps.Start().Line),
+			Parents:       formatArray(trace.Path),
+			ParentKey:     trace.ParentKey,
+			Roles:         formatArray(roles),
+			Type:          nodeType,
 			UpstreamTypes: formatArray(trace.DiscardedTypes),
-			Value:      value,
+			Value:         value,
 		}
 		i++
 	}
@@ -300,7 +313,7 @@ func main() {
 			// Do not close the session! It nukes the whole database.
 			defer wg.Done()
 
-			newBuilder := func() *dbr.InsertBuilder{
+			newBuilder := func() *dbr.InsertBuilder {
 				return session.InsertInto(table).
 					Columns("id", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "uptypes", "value")
 			}
@@ -316,7 +329,7 @@ func main() {
 
 			i := 1
 			for r := range jobs {
-				if i % batch == 0 {
+				if i%batch == 0 {
 					submit()
 					i = 0
 				}
