@@ -95,9 +95,9 @@ func readParquet(parquetPath string, streams int, payload func(head, path string
 }
 
 type walkTrace struct {
-	Node      nodes.External
-	Path      []int32
-	ParentKey string
+	Node           nodes.External
+	Path           []int32
+	ParentKey      string
 	DiscardedTypes []string
 }
 
@@ -120,17 +120,17 @@ clickhouse-client --query="CREATE TABLE uasts (
 */
 
 type record struct {
-	ID         int32         `db:"id"`
-	Repository string        `db:"repo"`
-	Language   string        `db:"lang"`
-	File       string        `db:"file"`
-	Line       int32         `db:"line"`
-	Parents    string        `db:"parents"`  // []int32
-	ParentKey  string        `db:"pkey"`
-	Roles      string        `db:"roles"`  // []int16
-	Type       string        `db:"type"`
-	UpstreamTypes string     `db:"uptypes"`  // []string
-	Value      string        `db:"value"`
+	ID            int32  `db:"id"`
+	Repository    string `db:"repo"`
+	Language      string `db:"lang"`
+	File          string `db:"file"`
+	Line          int32  `db:"line"`
+	Parents       string `db:"parents"` // []int32
+	ParentKey     string `db:"pkey"`
+	Roles         string `db:"roles"` // []int16
+	Type          string `db:"type"`
+	UpstreamTypes string `db:"uptypes"` // []string
+	Value         string `db:"value"`
 }
 
 func formatArray(v interface{}) string {
@@ -238,17 +238,17 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 		goDeeper(false)
 
 		emitter <- record{
-			ID:         i,
-			Repository: repo,
-			Language:   lang,
-			File:       file,
-			Line:       int32(ps.Start().Line),
-			Parents:    formatArray(trace.Path),
-			ParentKey:  trace.ParentKey,
-			Roles:      formatArray(roles),
-			Type:       uast.TypeOf(node),
+			ID:            i,
+			Repository:    repo,
+			Language:      lang,
+			File:          file,
+			Line:          int32(ps.Start().Line),
+			Parents:       formatArray(trace.Path),
+			ParentKey:     trace.ParentKey,
+			Roles:         formatArray(roles),
+			Type:          uast.TypeOf(node),
 			UpstreamTypes: formatArray(trace.DiscardedTypes),
-			Value:      value,
+			Value:         value,
 		}
 		i++
 	}
@@ -300,7 +300,7 @@ func main() {
 			// Do not close the session! It nukes the whole database.
 			defer wg.Done()
 
-			newBuilder := func() *dbr.InsertBuilder{
+			newBuilder := func() *dbr.InsertBuilder {
 				return session.InsertInto(table).
 					Columns("id", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "uptypes", "value")
 			}
@@ -316,7 +316,7 @@ func main() {
 
 			i := 1
 			for r := range jobs {
-				if i % batch == 0 {
+				if i%batch == 0 {
 					submit()
 					i = 0
 				}
