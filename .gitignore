@@ -1,1 +1,4 @@
 .idea
+**/*.parquet
+**/*.csv
+uast2clickhouse
