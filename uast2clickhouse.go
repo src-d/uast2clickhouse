@@ -345,6 +345,7 @@ func main() {
 			submit := func() {
 				values := [][][]interface{}{builder.Value}
 				bisected := 1
+				pushedSizes := make([]int, 0, 1)
 				for bisected > 0 {
 					bisected = 0
 					for i, value := range values {
@@ -352,10 +353,9 @@ func main() {
 						batchBuilder.Value = value
 						_, err := batchBuilder.Exec()
 						if err == nil {
+							pushedSizes = append(pushedSizes, len(value))
 							values[i] = nil
 						} else if strings.Contains(err.Error(), "Cannot parse expression") {
-							log.Printf("Batch is too big, bisecting: %d rows, current queue size: %d",
-								len(value), len(values))
 							bisected++
 						} else {
 							log.Fatalf("Failed to insert: %v", err)
@@ -367,7 +367,6 @@ func main() {
 							if value != nil {
 								if len(value) > 1 {
 									p1, p2 := value[:len(value)/2], value[len(value)/2:]
-									log.Printf("New batch sizes: %d + %d", len(p1), len(p2))
 									newValues = append(newValues, p1)
 									newValues = append(newValues, p2)
 								} else {
@@ -377,6 +376,9 @@ func main() {
 						}
 						values = newValues
 					}
+				}
+				if len(pushedSizes) > 1 {
+					log.Printf("We had to bisect the batch: %v", pushedSizes)
 				}
 				builder = newBuilder()
 			}
