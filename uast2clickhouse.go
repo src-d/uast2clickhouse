@@ -22,12 +22,11 @@ import (
 	progress "gopkg.in/cheggaaa/pb.v1"
 )
 
-func parseFlags() (parquetPath, dbAddr, table, headMap string, dbstreams, readstreams, batch int) {
+func parseFlags() (parquetPath, dbAddr, table, headMap string, dbstreams, readstreams int) {
 	pflag.IntVar(&readstreams, "read-streams", runtime.NumCPU(), "Number of concurrent Parquet reader streams.")
 	pflag.IntVar(&dbstreams, "db-streams", runtime.NumCPU(), "Number of concurrent DB insertion streams.")
 	pflag.StringVar(&dbAddr, "db", "0.0.0.0:8123/default", "ClickHouse endpoint.")
 	pflag.StringVar(&table, "table", "uasts", "ClickHouse table name.")
-	pflag.IntVar(&batch, "batch", 2000, "INSERT batch size.")
 	pflag.StringVar(&headMap, "heads", "", "HEAD UUID mapping to repository names in CSV.")
 	pflag.Parse()
 	if pflag.NArg() != 1 {
@@ -36,6 +35,10 @@ func parseFlags() (parquetPath, dbAddr, table, headMap string, dbstreams, readst
 	parquetPath = pflag.Arg(0)
 	return
 }
+
+const (
+	batchSize = 2000
+)
 
 type parquetItem struct {
 	Head string `parquet:"name=head, type=UTF8"`
@@ -118,6 +121,26 @@ clickhouse-client --query="CREATE TABLE uasts (
   value String
 ) ENGINE = MergeTree() ORDER BY (repo, file, id);"
 
+CREATE TABLE meta (
+   repo String,
+   siva_filenames Array(String),
+   file_count Int32,
+   langs Array(String),
+   langs_bytes_count Array(UInt32),
+   langs_lines_count Array(UInt32),
+   langs_files_count Array(UInt32),
+   commits_count Int32,
+   branches_count Int32,
+   forks_count Int32,
+   empty_lines_count Array(UInt32),
+   code_lines_count Array(UInt32),
+   comment_lines_count Array(UInt32),
+   license_names Array(String),
+   license_confidences Array(Float32),
+   stars Int32,
+   size Int64,
+   INDEX stars stars TYPE minmax GRANULARITY 1
+) ENGINE = MergeTree() ORDER BY repo;
 */
 
 type record struct {
@@ -287,7 +310,7 @@ func readHeadMap(path string) map[string]string {
 
 func main() {
 	log.Println(os.Args)
-	parquetPath, dbAddr, table, headMap, dbstreams, readstreams, batch := parseFlags()
+	parquetPath, dbAddr, table, headMap, dbstreams, readstreams := parseFlags()
 	heads := readHeadMap(headMap)
 	log.Printf("Read %d head mappings", len(heads))
 	conn, err := dbr.Open("clickhouse", "http://"+dbAddr, nil)
@@ -320,16 +343,47 @@ func main() {
 			builder := newBuilder()
 
 			submit := func() {
-				_, err := builder.Exec()
-				if err != nil {
-					log.Fatalf("Failed to insert: %v", err)
+				values := [][][]interface{}{builder.Value}
+				bisected := 1
+				for bisected > 0 {
+					bisected = 0
+					for i, value := range values {
+						batchBuilder := newBuilder()
+						batchBuilder.Value = value
+						_, err := batchBuilder.Exec()
+						if err == nil {
+							values[i] = nil
+						} else if strings.Contains(err.Error(), "Cannot parse expression") {
+							log.Printf("Batch is too big, bisecting: %d rows, current queue size: %d",
+								len(value), len(values))
+							bisected++
+						} else {
+							log.Fatalf("Failed to insert: %v", err)
+						}
+					}
+					if bisected > 0 {
+						newValues := make([][][]interface{}, 0, bisected*2)
+						for _, value := range values {
+							if value != nil {
+								if len(value) > 1 {
+									p1, p2 := value[:len(value)/2], value[len(value)/2:]
+									log.Printf("New batch sizes: %d + %d", len(p1), len(p2))
+									newValues = append(newValues, p1)
+									newValues = append(newValues, p2)
+								} else {
+									log.Fatalf("Failed to insert values: %s", value)
+								}
+							}
+						}
+						values = newValues
+					}
 				}
 				builder = newBuilder()
 			}
 
 			i := 1
 			for r := range jobs {
-				if i%batch == 0 {
+				if i%batchSize == 0 {
 					submit()
 					i = 0
 				}
