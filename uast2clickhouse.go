@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,6 +119,8 @@ type walkTrace struct {
 
 clickhouse-client --query="CREATE TABLE uasts (
   id Int32,
+  left Int32,
+  right Int32,
   repo String,
   lang String,
   file String,
@@ -155,6 +158,8 @@ CREATE TABLE meta (
 
 type record struct {
 	ID            int32  `db:"id"`
+	LeftID        int32  `db:"left"`
+	RightID       int32  `db:"right"`
 	Repository    string `db:"repo"`
 	Language      string `db:"lang"`
 	File          string `db:"file"`
@@ -168,6 +173,11 @@ type record struct {
 	Value         string `db:"value"`
 }
 
+type positionedRecord struct {
+	Record record
+	Column int32
+}
+
 func formatArray(v interface{}) string {
 	val, _ := clickhouse.Array(v).Value()
 	return string(val.([]byte))
@@ -177,6 +187,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 	lang := strings.Split(uast.TypeOf(tree), ":")[0]
 	queue := []walkTrace{{tree, nil, "", nil, nil}}
 	var i int32 = 1
+	var positionedRecords []positionedRecord
 	for len(queue) > 0 {
 		trace := queue[len(queue)-1]
 		queue = queue[:len(queue)-1]
@@ -257,7 +268,6 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 				} else if sub := properNode["value"]; sub != nil {
 					value = fmt.Sprint(sub.Value())
 				} else if sub := properNode["Names"]; sub != nil {
-					// https://github.com/bblfsh/go-driver/issues/55
 					if n, ok := sub.(nodes.ExternalArray); ok {
 						var parts []string
 						for j := 0; j < n.Size(); j++ {
@@ -286,22 +296,47 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 		copy(path, trace.Path)
 		path[len(trace.Path)] = i
 		goDeeper(false, ps)
-
-		emitter <- record{
-			ID:            i,
-			Repository:    repo,
-			Language:      lang,
-			File:          file,
-			Line:          int32(ps.Start().Line),
-			Parents:       formatArray(trace.Path),
-			ParentKey:     trace.ParentKey,
-			Roles:         formatArray(roles),
-			Type:          nodeType,
-			OriginalType:  nodeOriginalType,
-			UpstreamTypes: formatArray(trace.DiscardedTypes),
-			Value:         value,
-		}
+		positionedRecords = append(positionedRecords, positionedRecord{
+			Record: record{
+				ID:            i,
+				LeftID:        0,
+				RightID:       0,
+				Repository:    repo,
+				Language:      lang,
+				File:          file,
+				Line:          int32(ps.Start().Line),
+				Parents:       formatArray(trace.Path),
+				ParentKey:     trace.ParentKey,
+				Roles:         formatArray(roles),
+				Type:          nodeType,
+				OriginalType:  nodeOriginalType,
+				UpstreamTypes: formatArray(trace.DiscardedTypes),
+				Value:         value,
+			},
+			Column: int32(ps.Start().Col),
+		})
 		i++
+	}
+	sort.Slice(positionedRecords, func(i, j int) bool {
+		if positionedRecords[i].Record.Line == positionedRecords[j].Record.Line {
+			if positionedRecords[i].Column == positionedRecords[j].Column {
+				return i < j
+			} else {
+				return positionedRecords[i].Column < positionedRecords[j].Column
+			}
+		} else {
+			return positionedRecords[i].Record.Line < positionedRecords[j].Record.Line
+		}
+	})
+	var prev_id int32 = 0
+	for j, positionedRecord := range positionedRecords {
+		record := positionedRecord.Record
+		record.LeftID = prev_id
+		prev_id = record.ID
+		if j+1 < len(positionedRecords) {
+			record.RightID = positionedRecords[j+1].Record.ID
+		}
+		emitter <- record
 	}
 }
 
@@ -353,7 +388,7 @@ func main() {
 
 			newBuilder := func() *dbr.InsertBuilder {
 				return session.InsertInto(table).
-					Columns("id", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "orig_type", "uptypes", "value")
+					Columns("id", "left", "right", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "orig_type", "uptypes", "value")
 			}
 			builder := newBuilder()
 
