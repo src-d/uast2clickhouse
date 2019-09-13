@@ -236,7 +236,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 				continue
 			}
 		}
-		if nodeType == "" {
+		if _, ok := typesToGoDeeper[nodeType]; ok {
 			goDeeper(true, ps)
 			continue
 		}
