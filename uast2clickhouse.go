@@ -70,13 +70,22 @@ func readParquet(parquetPath string, streams int, payload func(head, path string
 	jobs := make(chan parquetItem, streams)
 	wg := sync.WaitGroup{}
 	wg.Add(streams)
+	seenPaths := make(map[string]struct{})
+	seenPathsMutex := sync.RWMutex{}
 	for i := 0; i < streams; i++ {
 		go func(i int) {
 			for item := range jobs {
 				if tree, err := nodesproto.ReadTree(bytes.NewBuffer([]byte(item.UAST))); err != nil {
 					log.Fatalf("Item %d deserialize error %s: %v", i+1, parquetPath, err)
 				} else {
-					payload(item.Head, item.Path, tree)
+					seenPathsMutex.Lock()
+					if _, ok := seenPaths[item.Path]; !ok {
+						seenPaths[item.Path] = struct{}{}
+						seenPathsMutex.Unlock()
+						payload(item.Head, item.Path, tree)
+					} else {
+						seenPathsMutex.Unlock()
+					}
 				}
 			}
 			wg.Done()
@@ -117,6 +126,7 @@ clickhouse-client --query="CREATE TABLE uasts (
   pkey String,
   roles Array(Int16),
   type String,
+  orig_type String,
   uptypes Array(String),
   value String
 ) ENGINE = MergeTree() ORDER BY (repo, file, id);"
@@ -153,6 +163,7 @@ type record struct {
 	ParentKey     string `db:"pkey"`
 	Roles         string `db:"roles"` // []int16
 	Type          string `db:"type"`
+	OriginalType  string `db:"orig_type"`
 	UpstreamTypes string `db:"uptypes"` // []string
 	Value         string `db:"value"`
 }
@@ -172,7 +183,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 		node := trace.Node
 		path := trace.Path
 		parentPs := trace.ParentPositions
-		nodeType := uast.TypeOf(node)
+		nodeOriginalType := uast.TypeOf(node)
 
 		goDeeper := func(discarded bool, ps uast.Positions) {
 			var discardedTypes []string
@@ -188,7 +199,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 			case nodes.KindObject:
 				if n, ok := node.(nodes.ExternalObject); ok {
 					for _, k := range n.Keys() {
-						if k != "Names" {
+						if _, exists := attributeBlacklist[k]; !exists {
 							v, _ := n.ValueAt(k)
 							queue = append(queue, walkTrace{v, path, k, discardedTypes, ps})
 						}
@@ -227,7 +238,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 				continue
 			}
 		}
-		if nodeType == "" {
+		if _, exists := typesToGoDeeper[nodeOriginalType]; exists {
 			goDeeper(true, ps)
 			continue
 		}
@@ -267,7 +278,10 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 			goDeeper(true, ps)
 			continue
 		}
-
+		nodeType := nodeOriginalType
+		if properClass, exists := typeMapping[nodeOriginalType]; exists {
+			nodeType = properClass
+		}
 		path = make([]int32, len(trace.Path)+1)
 		copy(path, trace.Path)
 		path[len(trace.Path)] = i
@@ -283,6 +297,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 			ParentKey:     trace.ParentKey,
 			Roles:         formatArray(roles),
 			Type:          nodeType,
+			OriginalType:  nodeOriginalType,
 			UpstreamTypes: formatArray(trace.DiscardedTypes),
 			Value:         value,
 		}
@@ -338,7 +353,7 @@ func main() {
 
 			newBuilder := func() *dbr.InsertBuilder {
 				return session.InsertInto(table).
-					Columns("id", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "uptypes", "value")
+					Columns("id", "repo", "lang", "file", "line", "parents", "pkey", "roles", "type", "orig_type", "uptypes", "value")
 			}
 			builder := newBuilder()
 
