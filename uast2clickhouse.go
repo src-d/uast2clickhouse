@@ -70,13 +70,22 @@ func readParquet(parquetPath string, streams int, payload func(head, path string
 	jobs := make(chan parquetItem, streams)
 	wg := sync.WaitGroup{}
 	wg.Add(streams)
+	seenPaths := make(map[string]struct{})
+	seenPathsMutex := sync.RWMutex{}
 	for i := 0; i < streams; i++ {
 		go func(i int) {
 			for item := range jobs {
 				if tree, err := nodesproto.ReadTree(bytes.NewBuffer([]byte(item.UAST))); err != nil {
 					log.Fatalf("Item %d deserialize error %s: %v", i+1, parquetPath, err)
 				} else {
-					payload(item.Head, item.Path, tree)
+					seenPathsMutex.Lock()
+					if _, ok := seenPaths[item.Path]; !ok {
+						seenPaths[item.Path] = struct{}{}
+						seenPathsMutex.Unlock()
+						payload(item.Head, item.Path, tree)
+					} else {
+						seenPathsMutex.Unlock()
+					}
 				}
 			}
 			wg.Done()
