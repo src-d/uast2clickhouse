@@ -197,7 +197,7 @@ func emitRecords(repo, file string, tree nodes.Node, emitter chan record) {
 			case nodes.KindObject:
 				if n, ok := node.(nodes.ExternalObject); ok {
 					for _, k := range n.Keys() {
-						if k != "Names" {
+						if _, ok := attributeBlacklist[k]; !ok {
 							v, _ := n.ValueAt(k)
 							queue = append(queue, walkTrace{v, path, k, discardedTypes, ps})
 						}
