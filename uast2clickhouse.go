@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
 	"strconv"
@@ -25,7 +26,7 @@ import (
 	progress "gopkg.in/cheggaaa/pb.v1"
 )
 
-func parseFlags() (inputDef, dbAddr, table, headMap string, dbstreams, readstreams int) {
+func parseFlags() (inputDef, headMap, dbAddr, table string, dbstreams, readstreams int) {
 	pflag.IntVar(&readstreams, "read-streams", runtime.NumCPU(), "Number of concurrent Parquet reader streams.")
 	pflag.IntVar(&dbstreams, "db-streams", runtime.NumCPU(), "Number of concurrent DB insertion streams.")
 	pflag.StringVar(&dbAddr, "db", "0.0.0.0:8123/default", "ClickHouse endpoint.")
@@ -59,7 +60,7 @@ func createProgressBar(total int) *progress.ProgressBar {
 	return bar
 }
 
-func processParquet(parquetPath string, streams int, payload func(head, path string, tree nodes.Node)) {
+func readParquet(parquetPath string, streams int, payload func(head, path string, tree nodes.Node)) {
 	fr, err := local.NewLocalFileReader(parquetPath)
 	if err != nil {
 		log.Fatalf("Can't open %s: %v", parquetPath, err)
@@ -119,7 +120,7 @@ type walkTrace struct {
 
 /*
 
-clickhouse-client --query="CREATE TABLE uasts (
+clickhouse-client --query="CREATE TABLE uastsng (
   id Int32,
   left Int32,
   right Int32,
@@ -360,61 +361,47 @@ func readHeadMap(path string) map[string]string {
 	return result
 }
 
-func createParquetPathGenerator(inputDef string) (chan string, func(string)) {
-	gen := make(chan string, 1)
-	_, err := os.Stat(inputDef)
-	if err == nil {
-		gen <- inputDef
-		close(gen)
-		return gen, func(string) {}
-	}
-	if strings.Count(inputDef, ":") != 1 {
-		log.Fatalf("Unreadable input: %s: %v", inputDef, err)
-	}
-	conn, err := beanstalk.Dial("tcp", inputDef)
+func pushFromQueue(addr string) {
+	conn, err := beanstalk.Dial("tcp", addr)
 	if err != nil {
-		log.Fatalf("Cannot connect to beanstalkd at %s: %v", inputDef, err)
+		log.Fatalf("Cannot connect to beanstalkd at %s: %v", addr, err)
 	}
-	jobMap := map[string]uint64{}
-	lock := &sync.Mutex{}
-
-	deleteJob := func(path string) {
-		lock.Lock()
-		id := jobMap[path]
-		lock.Unlock()
-		if err = conn.Delete(id); err != nil {
-			log.Fatalf("Cannot delete job %d in beanstalkd: %v", id, err)
+	defer conn.Close()
+	for {
+		id, body, err := conn.Reserve(time.Hour)
+		if err != nil {
+			log.Fatalf("Cannot read from beanstalkd at %s: %v", addr, err)
 		}
-		lock.Lock()
-		delete(jobMap, path)
-		lock.Unlock()
-	}
-
-	go func() {
-		defer conn.Close()
-		for {
-			id, body, err := conn.Reserve(time.Hour)
+		if len(body) > 0 {
+			cmd := exec.Command(os.Args[0])
+			cmd.Env = os.Environ()
+			cmd.Args = make([]string, len(os.Args))
+			copy(cmd.Args, os.Args[:len(os.Args)-1])
+			cmd.Args[len(cmd.Args)-1] = string(body)
+			log.Printf("running %s", strings.Join(cmd.Args, " "))
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if err := cmd.Start(); err != nil {
+				log.Fatalf("Failed to start the slave process: %v", err)
+			}
+			err := cmd.Wait()
 			if err != nil {
-				log.Fatalf("Cannot read from beanstalkd at %s: %v", inputDef, err)
-			}
-			path := string(body)
-			if len(path) > 0 {
-				lock.Lock()
-				jobMap[path] = id
-				lock.Unlock()
-				gen <- path
+				if err = conn.Bury(id, 0); err != nil {
+					log.Fatalf("Cannot bury job %d in beanstalkd: %v", id, err)
+				}
 			} else {
-				close(gen)
-				break
+				if err = conn.Delete(id); err != nil {
+					log.Fatalf("Cannot delete job %d in beanstalkd: %v", id, err)
+				}
 			}
+		} else {
+			break
 		}
-	}()
-	return gen, deleteJob
+	}
 }
 
-func main() {
-	log.Println(os.Args)
-	inputDef, dbAddr, table, headMap, dbStreams, readStreams := parseFlags()
+func pushParquet(parquetPath, headMap, dbAddr, table string, dbStreams, readStreams int) {
 	heads := readHeadMap(headMap)
 	log.Printf("Read %d head mappings", len(heads))
 	conn, err := dbr.Open("clickhouse", "http://"+dbAddr, nil)
@@ -431,17 +418,6 @@ func main() {
 			log.Printf("Error while closing the DB connection: %v", err)
 		}
 	}()
-
-	gen, onDone := createParquetPathGenerator(inputDef)
-	for parquetPath := range gen {
-		pushParquet(parquetPath, dbStreams, conn, table, heads, readStreams)
-		onDone(parquetPath)
-	}
-}
-
-func pushParquet(parquetPath string, dbStreams int, conn *dbr.Connection, table string,
-	heads map[string]string, readStreams int) {
-
 	jobs := make(chan record, 2*dbStreams)
 	wg := sync.WaitGroup{}
 	for x := 0; x < dbStreams; x++ {
@@ -514,8 +490,25 @@ func pushParquet(parquetPath string, dbStreams int, conn *dbr.Connection, table 
 		emitRecords(heads[head], path, tree, jobs)
 	}
 	log.Printf("Reading %s", parquetPath)
-	processParquet(parquetPath, readStreams, handleFile)
+	readParquet(parquetPath, readStreams, handleFile)
 	log.Println("Finishing")
 	close(jobs)
 	wg.Wait()
+}
+
+func main() {
+	log.Println(os.Args)
+	inputDef, headMap, dbAddr, table, dbStreams, readStreams := parseFlags()
+
+	_, err := os.Stat(inputDef)
+	if err == nil {
+		// plain file mode
+		pushParquet(inputDef, headMap, dbAddr, table, dbStreams, readStreams)
+		return
+	}
+	// beanstalkd queue mode
+	if strings.Count(inputDef, ":") != 1 {
+		log.Fatalf("Unreadable input: %s: %v", inputDef, err)
+	}
+	pushFromQueue(inputDef)
 }

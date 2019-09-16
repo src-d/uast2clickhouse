@@ -3,6 +3,7 @@ module uast2clickhouse
 go 1.12
 
 require (
+	github.com/agtorre/gocolorize v1.0.0 // indirect
 	github.com/apache/thrift v0.12.0 // indirect
 	github.com/beanstalkd/go-beanstalk v0.0.0-20190515041346-390b03b3064a
 	github.com/fatih/color v1.7.0 // indirect
@@ -10,6 +11,7 @@ require (
 	github.com/gogo/protobuf v1.2.1 // indirect
 	github.com/golang/protobuf v1.3.2 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
+	github.com/kr/beanstalk v0.0.0-20180818045031-cae1762e4858 // indirect
 	github.com/lib/pq v1.2.0 // indirect
 	github.com/mailru/dbr v3.0.0+incompatible
 	github.com/mailru/go-clickhouse v1.1.0
@@ -18,6 +20,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.11.0 // indirect
 	github.com/pkg/errors v0.8.1 // indirect
 	github.com/spf13/pflag v1.0.3
+	github.com/src-d/beanstool v0.2.0 // indirect
 	github.com/stretchr/testify v1.3.0 // indirect
 	github.com/xitongsys/parquet-go v1.3.0
 	github.com/xitongsys/parquet-go-source v0.0.0-20190611011107-a9b8f78bccbe

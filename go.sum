@@ -1,3 +1,5 @@
+github.com/agtorre/gocolorize v1.0.0 h1:TvGQd+fAqWQlDjQxSKe//Y6RaxK+RHpEU9X/zPmHW50=
+github.com/agtorre/gocolorize v1.0.0/go.mod h1:cH6imfTkHVBRJhSOeSeEZhB4zqEYSq0sXuIyehgZMIY=
 github.com/apache/thrift v0.12.0 h1:pODnxUFNcjP9UTLZGTdeh+j16A8lJbRvD3rOtrk/7bs=
 github.com/apache/thrift v0.12.0/go.mod h1:cp2SuWMxlEZw2r+iP2GNCdIi4C1qmUzdZFSVb+bacwQ=
 github.com/beanstalkd/go-beanstalk v0.0.0-20190515041346-390b03b3064a h1:Q9n7/Y0jg/U18xjQz2l42we7XQAqwkBGWByBZ36BAHo=
@@ -16,6 +18,8 @@ github.com/golang/snappy v0.0.1 h1:Qgr9rKW7uDUkrbSmQeiDsGa8SjGyCOGtuasMWwvp2P4=
 github.com/golang/snappy v0.0.1/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
 github.com/kisielk/errcheck v1.1.0/go.mod h1:EZBBE59ingxPouuu3KfxchcWSUPOHkagtvWXihfKN4Q=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
+github.com/kr/beanstalk v0.0.0-20180818045031-cae1762e4858 h1:kkNVQqyYyI0SsW9sOUEAKiLzoJGzW1ZVoYQCUmrAowE=
+github.com/kr/beanstalk v0.0.0-20180818045031-cae1762e4858/go.mod h1:S640fId9Ag4k2hh6Hwwj62pMSZqfMtg/kfKPeAOhET8=
 github.com/lib/pq v1.2.0 h1:LXpIM/LZ5xGFhOpXAQUIMM1HdyqzVYM13zNdjCEEcA0=
 github.com/lib/pq v1.2.0/go.mod h1:5WUZQaWbwv1U+lTReE5YruASi9Al49XbQIvNi/34Woo=
 github.com/mailru/dbr v3.0.0+incompatible h1:ULJ6NT9jQnDuu3U3WGqMNNGhBru2VvBCrona7Cm4uJQ=
@@ -36,6 +40,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/spf13/pflag v1.0.3 h1:zPAT6CGy6wXeQ7NtTnaTerfKOsV6V6F8agHXFiazDkg=
 github.com/spf13/pflag v1.0.3/go.mod h1:DYY7MBk1bdzusC3SYhjObp+wFpr4gzcvqqNjLnInEg4=
+github.com/src-d/beanstool v0.2.0 h1:Yzr1wJ+ylFZ28lKn65SaWeRASYH2r1vr1hLFgE8MgYQ=
+github.com/src-d/beanstool v0.2.0/go.mod h1:+K1tHfwpXK50PboKdhzx2krEj/WcIDDg4yst6IzuMAo=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=
 github.com/stretchr/testify v1.3.0 h1:TivCn/peBQ7UY8ooIcPgZFpTNSz0Q2U6UrFlUfqbe0Q=
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
