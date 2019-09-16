@@ -1,7 +1,7 @@
 package main
 
 var globalAttributeBlacklist = map[string]struct{}{
-	"Names": struct{}{},
+	"Names": {},
 }
 
 var languageAttributeBlacklist = map[string]map[string]struct{}{
