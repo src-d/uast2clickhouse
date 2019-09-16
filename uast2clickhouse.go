@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/beanstalkd/go-beanstalk"
 	"github.com/mailru/dbr"
 	"github.com/mailru/go-clickhouse"
 	"github.com/spf13/pflag"
@@ -23,7 +25,7 @@ import (
 	progress "gopkg.in/cheggaaa/pb.v1"
 )
 
-func parseFlags() (parquetPath, dbAddr, table, headMap string, dbstreams, readstreams int) {
+func parseFlags() (inputDef, dbAddr, table, headMap string, dbstreams, readstreams int) {
 	pflag.IntVar(&readstreams, "read-streams", runtime.NumCPU(), "Number of concurrent Parquet reader streams.")
 	pflag.IntVar(&dbstreams, "db-streams", runtime.NumCPU(), "Number of concurrent DB insertion streams.")
 	pflag.StringVar(&dbAddr, "db", "0.0.0.0:8123/default", "ClickHouse endpoint.")
@@ -33,7 +35,7 @@ func parseFlags() (parquetPath, dbAddr, table, headMap string, dbstreams, readst
 	if pflag.NArg() != 1 {
 		log.Fatalf("usage: uast2clickhouse /path/to/file.parquet")
 	}
-	parquetPath = pflag.Arg(0)
+	inputDef = pflag.Arg(0)
 	return
 }
 
@@ -57,7 +59,7 @@ func createProgressBar(total int) *progress.ProgressBar {
 	return bar
 }
 
-func readParquet(parquetPath string, streams int, payload func(head, path string, tree nodes.Node)) {
+func processParquet(parquetPath string, streams int, payload func(head, path string, tree nodes.Node)) {
 	fr, err := local.NewLocalFileReader(parquetPath)
 	if err != nil {
 		log.Fatalf("Can't open %s: %v", parquetPath, err)
@@ -358,9 +360,61 @@ func readHeadMap(path string) map[string]string {
 	return result
 }
 
+func createParquetPathGenerator(inputDef string) (chan string, func(string)) {
+	gen := make(chan string, 1)
+	_, err := os.Stat(inputDef)
+	if err == nil {
+		gen <- inputDef
+		close(gen)
+		return gen, func(string) {}
+	}
+	if strings.Count(inputDef, ":") != 1 {
+		log.Fatalf("Unreadable input: %s: %v", inputDef, err)
+	}
+	conn, err := beanstalk.Dial("tcp", inputDef)
+	if err != nil {
+		log.Fatalf("Cannot connect to beanstalkd at %s: %v", inputDef, err)
+	}
+	jobMap := map[string]uint64{}
+	lock := &sync.Mutex{}
+
+	deleteJob := func(path string) {
+		lock.Lock()
+		id := jobMap[path]
+		lock.Unlock()
+		if err = conn.Delete(id); err != nil {
+			log.Fatalf("Cannot delete job %d in beanstalkd: %v", id, err)
+		}
+		lock.Lock()
+		delete(jobMap, path)
+		lock.Unlock()
+	}
+
+	go func() {
+		defer conn.Close()
+		for {
+			id, body, err := conn.Reserve(time.Hour)
+			if err != nil {
+				log.Fatalf("Cannot read from beanstalkd at %s: %v", inputDef, err)
+			}
+			path := string(body)
+			if len(path) > 0 {
+				lock.Lock()
+				jobMap[path] = id
+				lock.Unlock()
+				gen <- path
+			} else {
+				close(gen)
+				break
+			}
+		}
+	}()
+	return gen, deleteJob
+}
+
 func main() {
 	log.Println(os.Args)
-	parquetPath, dbAddr, table, headMap, dbstreams, readstreams := parseFlags()
+	inputDef, dbAddr, table, headMap, dbStreams, readStreams := parseFlags()
 	heads := readHeadMap(headMap)
 	log.Printf("Read %d head mappings", len(heads))
 	conn, err := dbr.Open("clickhouse", "http://"+dbAddr, nil)
@@ -370,16 +424,27 @@ func main() {
 	if err := conn.Ping(); err != nil {
 		log.Fatalf("Failed to open %s: %v", dbAddr, err)
 	}
-	conn.SetMaxOpenConns(dbstreams)
+	conn.SetMaxOpenConns(dbStreams)
 	log.Printf("Connected to %s", dbAddr)
 	defer func() {
 		if err := conn.Close(); err != nil {
 			log.Printf("Error while closing the DB connection: %v", err)
 		}
 	}()
-	jobs := make(chan record, 2*dbstreams)
+
+	gen, onDone := createParquetPathGenerator(inputDef)
+	for parquetPath := range gen {
+		pushParquet(parquetPath, dbStreams, conn, table, heads, readStreams)
+		onDone(parquetPath)
+	}
+}
+
+func pushParquet(parquetPath string, dbStreams int, conn *dbr.Connection, table string,
+	heads map[string]string, readStreams int) {
+
+	jobs := make(chan record, 2*dbStreams)
 	wg := sync.WaitGroup{}
-	for x := 0; x < dbstreams; x++ {
+	for x := 0; x < dbStreams; x++ {
 		wg.Add(1)
 		go func() {
 			session := conn.NewSession(nil)
@@ -445,12 +510,11 @@ func main() {
 			submit()
 		}()
 	}
-
 	handleFile := func(head, path string, tree nodes.Node) {
 		emitRecords(heads[head], path, tree, jobs)
 	}
 	log.Printf("Reading %s", parquetPath)
-	readParquet(parquetPath, readstreams, handleFile)
+	processParquet(parquetPath, readStreams, handleFile)
 	log.Println("Finishing")
 	close(jobs)
 	wg.Wait()

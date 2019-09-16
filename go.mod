@@ -4,6 +4,7 @@ go 1.12
 
 require (
 	github.com/apache/thrift v0.12.0 // indirect
+	github.com/beanstalkd/go-beanstalk v0.0.0-20190515041346-390b03b3064a
 	github.com/fatih/color v1.7.0 // indirect
 	github.com/go-sql-driver/mysql v1.4.1 // indirect
 	github.com/gogo/protobuf v1.2.1 // indirect
