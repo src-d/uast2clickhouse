@@ -26,12 +26,13 @@ import (
 	progress "gopkg.in/cheggaaa/pb.v1"
 )
 
-func parseFlags() (inputDef, headMap, dbAddr, table string, dbstreams, readstreams int) {
+func parseFlags() (inputDef, headMap, dbAddr, table string, dbstreams, readstreams int, timeout time.Duration) {
 	pflag.IntVar(&readstreams, "read-streams", runtime.NumCPU(), "Number of concurrent Parquet reader streams.")
 	pflag.IntVar(&dbstreams, "db-streams", runtime.NumCPU(), "Number of concurrent DB insertion streams.")
 	pflag.StringVar(&dbAddr, "db", "0.0.0.0:8123/default", "ClickHouse endpoint.")
 	pflag.StringVar(&table, "table", "uasts", "ClickHouse table name.")
 	pflag.StringVar(&headMap, "heads", "", "HEAD UUID mapping to repository names in CSV.")
+	pflag.DurationVar(&timeout, "timeout", time.Hour, "Maximum amount of time allowed to spend on the task.")
 	pflag.Parse()
 	if pflag.NArg() != 1 {
 		log.Fatalf("usage: uast2clickhouse /path/to/file.parquet")
@@ -361,14 +362,14 @@ func readHeadMap(path string) map[string]string {
 	return result
 }
 
-func pushFromQueue(addr string) {
+func pushFromQueue(addr string, timeout time.Duration) {
 	conn, err := beanstalk.Dial("tcp", addr)
 	if err != nil {
 		log.Fatalf("Cannot connect to beanstalkd at %s: %v", addr, err)
 	}
 	defer conn.Close()
 	for {
-		id, body, err := conn.Reserve(time.Hour)
+		id, body, err := conn.Reserve(timeout)
 		if err != nil {
 			log.Fatalf("Cannot read from beanstalkd at %s: %v", addr, err)
 		}
@@ -498,11 +499,15 @@ func pushParquet(parquetPath, headMap, dbAddr, table string, dbStreams, readStre
 
 func main() {
 	log.Println(os.Args)
-	inputDef, headMap, dbAddr, table, dbStreams, readStreams := parseFlags()
+	inputDef, headMap, dbAddr, table, dbStreams, readStreams, timeout := parseFlags()
 
 	_, err := os.Stat(inputDef)
 	if err == nil {
 		// plain file mode
+		go func() {
+			time.Sleep(timeout)
+			os.Exit(1)
+		}()
 		pushParquet(inputDef, headMap, dbAddr, table, dbStreams, readStreams)
 		return
 	}
@@ -510,5 +515,5 @@ func main() {
 	if strings.Count(inputDef, ":") != 1 {
 		log.Fatalf("Unreadable input: %s: %v", inputDef, err)
 	}
-	pushFromQueue(inputDef)
+	pushFromQueue(inputDef, timeout)
 }
