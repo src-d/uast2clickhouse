@@ -447,10 +447,11 @@ func pushParquet(parquetPath, headMap, dbAddr, table string, dbStreams, readStre
 						if err == nil {
 							pushedSizes = append(pushedSizes, len(value))
 							values[i] = nil
-						} else if strings.Contains(err.Error(), "Cannot parse expression") {
+						} else if strings.Contains(err.Error(), "Cannot parse expression") || err.Error() == "EOF" {
 							bisected++
 						} else {
-							log.Fatalf("Failed to insert: %v", err)
+							log.Printf("Failed to insert: %v", err)
+							values[i] = nil
 						}
 					}
 					if bisected > 0 {
@@ -462,7 +463,7 @@ func pushParquet(parquetPath, headMap, dbAddr, table string, dbStreams, readStre
 									newValues = append(newValues, p1)
 									newValues = append(newValues, p2)
 								} else {
-									log.Fatalf("Failed to insert values: %s", value)
+									log.Fatalf("Failed to insert values: %v", value)
 								}
 							}
 						}
