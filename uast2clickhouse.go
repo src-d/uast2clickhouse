@@ -121,7 +121,7 @@ type walkTrace struct {
 
 /*
 
-clickhouse-client --query="CREATE TABLE uastsng (
+clickhouse-client --query="CREATE TABLE uasts (
   id Int32,
   left Int32,
   right Int32,
